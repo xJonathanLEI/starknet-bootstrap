@@ -32,6 +32,15 @@ The bootstrapping process looks like this:
 7. The special account deploys the UDC;
 8. The bootstrapper account declares all the classes needed, and deploys all the contracts needed using the UDC deployed.
 
+## Bridge addresses
+
+Here is a list of `StarknetEthBridge` addresses for well-known networks:
+
+| Network ID               | Address                                      |
+| ------------------------ | -------------------------------------------- |
+| `SN_INTEGRATION_SEPOLIA` | `0x6BC7a9f029E5E0CFe84c5b8b1acC0EA952EAed3b` |
+| `SN_SEPOLIA`             | `0x8453FC6Cd1bCfE8D4dFC069C400B433054d47bDc` |
+
 ## License
 
 Licensed under either of
