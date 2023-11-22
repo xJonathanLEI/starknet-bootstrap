@@ -1,6 +1,7 @@
-use std::{ffi::OsStr, sync::Arc, time::Duration};
+use std::{convert::Infallible, ffi::OsStr, sync::Arc, time::Duration};
 
 use anyhow::Result;
+use async_trait::async_trait;
 use clap::{builder::TypedValueParser, Parser};
 use ethers::{
     core::k256::ecdsa::SigningKey as L1Key,
@@ -11,11 +12,12 @@ use ethers::{
 };
 use starknet::{
     accounts::{
-        Account, AccountFactory, ExecutionEncoding, OpenZeppelinAccountFactory, SingleOwnerAccount,
+        Account, AccountFactory, Call, ConnectedAccount, ExecutionEncoding,
+        OpenZeppelinAccountFactory, RawAccountDeployment, SingleOwnerAccount,
     },
     core::types::{
-        contract::legacy::LegacyContractClass, BlockId, BlockTag, ExecutionResult, FieldElement,
-        FunctionCall, StarknetError,
+        contract::legacy::LegacyContractClass, BlockId, BlockTag, BroadcastedInvokeTransaction,
+        BroadcastedTransaction, ExecutionResult, FieldElement, FunctionCall, StarknetError,
     },
     macros::{felt, selector},
     providers::{
@@ -35,7 +37,7 @@ const L2_ETH_ADDRESS: FieldElement =
 const L2_OZ_CLASS_HASH: FieldElement =
     felt!("0x05c478ee27f2112411f86f207605b2e2c58cdb647bac0df27f660ef2252359c6");
 
-const POLL_INTERVAL: Duration = Duration::from_secs(10);
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about)]
@@ -65,6 +67,13 @@ pub struct L1KeyParser;
 
 #[derive(Clone)]
 pub struct L2KeyParser;
+
+#[derive(Clone)]
+pub struct UdcDeployerFactory<P> {
+    class_hash: FieldElement,
+    chain_id: FieldElement,
+    provider: P,
+}
 
 impl TypedValueParser for L1KeyParser {
     type Value = L1Key;
@@ -98,6 +107,41 @@ impl TypedValueParser for L2KeyParser {
     }
 }
 
+#[async_trait]
+impl<P> AccountFactory for UdcDeployerFactory<P>
+where
+    P: Provider + Sync + Send,
+{
+    type Provider = P;
+    type SignError = Infallible;
+
+    fn class_hash(&self) -> FieldElement {
+        self.class_hash
+    }
+
+    fn calldata(&self) -> Vec<FieldElement> {
+        vec![]
+    }
+
+    fn chain_id(&self) -> FieldElement {
+        self.chain_id
+    }
+
+    fn provider(&self) -> &Self::Provider {
+        &self.provider
+    }
+
+    fn block_id(&self) -> BlockId {
+        BlockId::Tag(BlockTag::Pending)
+    }
+
+    async fn sign_deployment(
+        &self,
+        _deployment: &RawAccountDeployment,
+    ) -> Result<Vec<FieldElement>, Self::SignError> {
+        Ok(vec![])
+    }
+}
 #[tokio::main]
 async fn main() -> Result<()> {
     run().await
@@ -204,39 +248,157 @@ async fn run() -> Result<()> {
         );
     }
 
-    let bootstrapper = SingleOwnerAccount::new(
+    let mut bootstrapper = SingleOwnerAccount::new(
         l2_provider.clone(),
         bootstrapper_signer.clone(),
         bootstrapper_address,
         l2_chain_id,
         ExecutionEncoding::Legacy,
     );
+    bootstrapper.set_block_id(BlockId::Tag(BlockTag::Pending));
 
-    let udc_class: LegacyContractClass =
+    let udc_class: Arc<LegacyContractClass> = Arc::new(
         serde_json::from_str(include_str!("./classes/UniversalDeployer.json"))
-            .expect("to be valid contract class");
-    let udc_class = Arc::new(udc_class);
-    let udc_class_hash = udc_class.class_hash()?;
+            .expect("to be valid contract class"),
+    );
+    let udc_class_hash =
+        declare_class(&l2_provider, &bootstrapper, udc_class, "UniversalDeployer").await?;
 
-    if is_class_declared(&l2_provider, udc_class_hash).await? {
+    let udc_address = starknet::core::utils::get_contract_address(
+        FieldElement::ZERO,
+        udc_class_hash,
+        &[],
+        FieldElement::ZERO,
+    );
+
+    if is_address_deployed(&l2_provider, udc_address).await? {
         println!(
-            "UniversalDeployer class already declared: {:#064x}",
-            udc_class_hash
+            "UniversalDeployer contract already available at: {:#064x}",
+            udc_address
         );
     } else {
-        println!("UniversalDeployer class not declared yet. Declaring it from bootstrapper...");
+        println!("UniversalDeployer contract not deployed yet");
 
-        let declaration_tx = bootstrapper.declare_legacy(udc_class).send().await?;
-        println!(
-            "UniversalDeployer class class declaration transaction: {:#064x}",
-            declaration_tx.transaction_hash
+        // We can't deploy the UDC without having the UDC first. Here we use a special "account"
+        // contract that's used for UDC deployment.
+        //
+        // For simplicity, it's implemented in Cairo 0 to avoid dealing with Sierra compilation.
+        let udc_deployer_class: Arc<LegacyContractClass> = Arc::new(
+            serde_json::from_str(include_str!("./classes/UdcDeployer.json"))
+                .expect("to be valid contract class"),
         );
-        watch_l2_tx(&l2_provider, declaration_tx.transaction_hash).await?;
+        let udc_deployer_class_hash = declare_class(
+            &l2_provider,
+            &bootstrapper,
+            udc_deployer_class,
+            "UdcDeployer",
+        )
+        .await?;
 
-        println!(
-            "UniversalDeployer class now declared: {:#064x}",
-            udc_class_hash
+        let udc_deployer_address = starknet::core::utils::get_contract_address(
+            FieldElement::ZERO,
+            udc_deployer_class_hash,
+            &[],
+            FieldElement::ZERO,
         );
+
+        if is_address_deployed(&l2_provider, udc_deployer_address).await? {
+            println!(
+                "UdcDeployer is already available at: {:#064x}",
+                udc_deployer_address
+            );
+        } else {
+            // Makes sure the new account has some funds in it
+            let udc_deployer_balance = get_l2_balance(&l2_provider, udc_deployer_address).await?;
+            println!(
+                "UDC deployer address balance: {} ETH",
+                udc_deployer_balance.to_big_decimal(18)
+            );
+
+            if udc_deployer_balance == FieldElement::ZERO {
+                println!("Sending 0.001 ETH to UDC deployer address...");
+
+                let eth_transfer_tx = bootstrapper
+                    .execute(vec![Call {
+                        to: L2_ETH_ADDRESS,
+                        selector: selector!("transfer"),
+                        calldata: vec![
+                            udc_deployer_address,
+                            felt!("1000000000000000"),
+                            FieldElement::ZERO,
+                        ],
+                    }])
+                    .send()
+                    .await?;
+                println!(
+                    "ETH transfer transaction: {:#064x}",
+                    eth_transfer_tx.transaction_hash
+                );
+                watch_l2_tx(&l2_provider, eth_transfer_tx.transaction_hash).await?;
+            }
+
+            println!("Deploying UDC deployer...");
+            let udc_deployer_factory = UdcDeployerFactory {
+                class_hash: udc_deployer_class_hash,
+                chain_id: l2_chain_id,
+                provider: l2_provider.clone(),
+            };
+            let deployment_tx = udc_deployer_factory
+                .deploy(FieldElement::ZERO)
+                .send()
+                .await?;
+            println!(
+                "UDC deployer deployment transaction: {:#064x}",
+                deployment_tx.transaction_hash
+            );
+            watch_l2_tx(&l2_provider, deployment_tx.transaction_hash).await?;
+        }
+
+        println!("Deploying UniversalDeployer...");
+
+        let udc_deployment_nonce = l2_provider
+            .get_nonce(BlockId::Tag(BlockTag::Pending), udc_deployer_address)
+            .await?;
+
+        let udc_deployment_fees = l2_provider
+            .estimate_fee_single(
+                BroadcastedTransaction::Invoke(BroadcastedInvokeTransaction {
+                    sender_address: udc_deployer_address,
+                    calldata: vec![udc_class_hash],
+                    max_fee: FieldElement::ZERO,
+                    signature: vec![],
+                    nonce: udc_deployment_nonce,
+                    is_query: true,
+                }),
+                BlockId::Tag(BlockTag::Pending),
+            )
+            .await?;
+
+        let udc_deployment_tx = l2_provider
+            .add_invoke_transaction(BroadcastedInvokeTransaction {
+                sender_address: udc_deployer_address,
+                calldata: vec![udc_class_hash],
+                max_fee: (udc_deployment_fees.overall_fee * 2).into(),
+                signature: vec![],
+                nonce: udc_deployment_nonce,
+                is_query: false,
+            })
+            .await?;
+        println!(
+            "UniversalDeployer deployment transaction: {:#064x}",
+            udc_deployment_tx.transaction_hash
+        );
+        watch_l2_tx(&l2_provider, udc_deployment_tx.transaction_hash).await?;
+
+        // Sanity check on whether UDC is actually deployed
+        if is_address_deployed(&l2_provider, udc_address).await? {
+            println!(
+                "UniversalDeployer is now available at: {:#064x}",
+                udc_address
+            );
+        } else {
+            anyhow::bail!("UDC still not available after deployment");
+        }
     }
 
     Ok(())
@@ -292,7 +454,44 @@ where
         .await?[0])
 }
 
-pub async fn watch_l2_tx<P>(provider: P, transaction_hash: FieldElement) -> Result<()>
+async fn declare_class<P, A>(
+    provider: P,
+    account: A,
+    class: Arc<LegacyContractClass>,
+    class_name: &'static str,
+) -> Result<FieldElement>
+where
+    P: Provider + Sync,
+    A: ConnectedAccount + Sync,
+    A::SignError: 'static,
+{
+    let class_hash = class.class_hash()?;
+
+    if is_class_declared(&provider, class_hash).await? {
+        println!(
+            "{} class already declared: {:#064x}",
+            class_name, class_hash
+        );
+    } else {
+        println!(
+            "{} class not declared yet. Declaring it from bootstrapper...",
+            class_name
+        );
+
+        let declaration_tx = account.declare_legacy(class).send().await?;
+        println!(
+            "UniversalDeployer class declaration transaction: {:#064x}",
+            declaration_tx.transaction_hash
+        );
+        watch_l2_tx(provider, declaration_tx.transaction_hash).await?;
+
+        println!("{} class now declared: {:#064x}", class_name, class_hash);
+    }
+
+    Ok(class_hash)
+}
+
+async fn watch_l2_tx<P>(provider: P, transaction_hash: FieldElement) -> Result<()>
 where
     P: Provider,
 {

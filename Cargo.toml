@@ -10,6 +10,7 @@ description = "Bootstrap a new Starknet network by declaring and deploying commo
 
 [dependencies]
 anyhow = "1.0.75"
+async-trait = "0.1.74"
 clap = { version = "4.4.8", features = ["derive"] }
 ethers = "2.0.11"
 hex = "0.4.3"
