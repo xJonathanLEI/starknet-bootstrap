@@ -3136,6 +3136,7 @@ dependencies = [
  "clap",
  "ethers",
  "hex",
+ "serde_json",
  "starknet",
  "tokio",
  "url",

@@ -10,8 +10,13 @@ use ethers::{
     types::{Address as L1Address, U256},
 };
 use starknet::{
-    accounts::{AccountFactory, OpenZeppelinAccountFactory},
-    core::types::{BlockId, BlockTag, ExecutionResult, FieldElement, FunctionCall, StarknetError},
+    accounts::{
+        Account, AccountFactory, ExecutionEncoding, OpenZeppelinAccountFactory, SingleOwnerAccount,
+    },
+    core::types::{
+        contract::legacy::LegacyContractClass, BlockId, BlockTag, ExecutionResult, FieldElement,
+        FunctionCall, StarknetError,
+    },
     macros::{felt, selector},
     providers::{
         jsonrpc::HttpTransport, JsonRpcClient, MaybeUnknownErrorCode, Provider, ProviderError,
@@ -98,16 +103,19 @@ async fn main() -> Result<()> {
     run().await
 }
 
+// Yes it's spaghetti code, but it's only gonna be used like once anyways.
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     let l2_provider = Arc::new(JsonRpcClient::new(HttpTransport::new(cli.l2_rpc)));
     let l2_chain_id = l2_provider.chain_id().await?;
 
+    let bootstrapper_signer = Arc::new(L2LocalWallet::from_signing_key(cli.l2_key));
+
     let mut oz_cairo_0_factory = OpenZeppelinAccountFactory::new(
         L2_OZ_CLASS_HASH,
         l2_chain_id,
-        L2LocalWallet::from_signing_key(cli.l2_key),
+        bootstrapper_signer.clone(),
         l2_provider.clone(),
     )
     .await?;
@@ -196,6 +204,41 @@ async fn run() -> Result<()> {
         );
     }
 
+    let bootstrapper = SingleOwnerAccount::new(
+        l2_provider.clone(),
+        bootstrapper_signer.clone(),
+        bootstrapper_address,
+        l2_chain_id,
+        ExecutionEncoding::Legacy,
+    );
+
+    let udc_class: LegacyContractClass =
+        serde_json::from_str(include_str!("./classes/UniversalDeployer.json"))
+            .expect("to be valid contract class");
+    let udc_class = Arc::new(udc_class);
+    let udc_class_hash = udc_class.class_hash()?;
+
+    if is_class_declared(&l2_provider, udc_class_hash).await? {
+        println!(
+            "UniversalDeployer class already declared: {:#064x}",
+            udc_class_hash
+        );
+    } else {
+        println!("UniversalDeployer class not declared yet. Declaring it from bootstrapper...");
+
+        let declaration_tx = bootstrapper.declare_legacy(udc_class).send().await?;
+        println!(
+            "UniversalDeployer class class declaration transaction: {:#064x}",
+            declaration_tx.transaction_hash
+        );
+        watch_l2_tx(&l2_provider, declaration_tx.transaction_hash).await?;
+
+        println!(
+            "UniversalDeployer class now declared: {:#064x}",
+            udc_class_hash
+        );
+    }
+
     Ok(())
 }
 
@@ -210,6 +253,23 @@ where
         Ok(_) => Ok(true),
         Err(ProviderError::StarknetError(StarknetErrorWithMessage {
             code: MaybeUnknownErrorCode::Known(StarknetError::ContractNotFound),
+            ..
+        })) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn is_class_declared<P>(provider: P, class_hash: FieldElement) -> Result<bool>
+where
+    P: Provider,
+{
+    match provider
+        .get_class(BlockId::Tag(BlockTag::Pending), class_hash)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(ProviderError::StarknetError(StarknetErrorWithMessage {
+            code: MaybeUnknownErrorCode::Known(StarknetError::ClassHashNotFound),
             ..
         })) => Ok(false),
         Err(err) => Err(err.into()),
