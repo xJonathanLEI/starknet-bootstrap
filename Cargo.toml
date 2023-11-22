@@ -1,0 +1,11 @@
+[package]
+name = "starknet-bootstrap"
+version = "0.1.0"
+authors = ["Jonathan LEI <me@xjonathan.dev>"]
+license = "MIT OR Apache-2.0"
+edition = "2021"
+readme = "README.md"
+repository = "https://github.com/xJonathanLEI/starknet-bootstrap"
+description = "Bootstrap a new Starknet network by declaring and deploying commonly used classes and contracts"
+
+[dependencies]
