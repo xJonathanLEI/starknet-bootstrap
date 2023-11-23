@@ -3,6 +3,7 @@ use std::{convert::Infallible, ffi::OsStr, sync::Arc, time::Duration};
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::{builder::TypedValueParser, Parser};
+use colored::Colorize;
 use ethers::{
     core::k256::ecdsa::SigningKey as L1Key,
     middleware::SignerMiddleware,
@@ -234,7 +235,10 @@ async fn run() -> Result<()> {
     // Locally calculates bootstrapper address
     let bootstrapper_deployment = oz_cairo_0_factory.deploy(FieldElement::ZERO);
     let bootstrapper_address = bootstrapper_deployment.address();
-    println!("L2 bootstrapper address: {:#064x}", bootstrapper_address);
+    println!(
+        "L2 bootstrapper address: {}",
+        format!("{:#064x}", bootstrapper_address).bright_yellow()
+    );
 
     if is_address_deployed(&l2_provider, bootstrapper_address).await? {
         println!("L2 bootstrapper has already been deployed");
@@ -303,14 +307,14 @@ async fn run() -> Result<()> {
         // Deploys bootstrapper address
         let bootstrapper_deployment_tx = bootstrapper_deployment.send().await?;
         println!(
-            "L2 bootstrapper account deployment transaction: {:#064x}",
-            bootstrapper_deployment_tx.transaction_hash
+            "L2 bootstrapper account deployment transaction: {}",
+            format!("{:#064x}", bootstrapper_deployment_tx.transaction_hash).bright_yellow()
         );
         watch_l2_tx(&l2_provider, bootstrapper_deployment_tx.transaction_hash).await?;
 
         println!(
-            "L2 bootstrapper account is now available at: {:#064x}",
-            bootstrapper_address
+            "L2 bootstrapper account is now available at: {}",
+            format!("{:#064x}", bootstrapper_address).bright_yellow()
         );
     }
 
@@ -339,8 +343,8 @@ async fn run() -> Result<()> {
 
     if is_address_deployed(&l2_provider, udc_address).await? {
         println!(
-            "UniversalDeployer contract already available at: {:#064x}",
-            udc_address
+            "UniversalDeployer contract already available at: {}",
+            format!("{:#064x}", udc_address).bright_yellow()
         );
     } else {
         println!("UniversalDeployer contract not deployed yet");
@@ -370,8 +374,8 @@ async fn run() -> Result<()> {
 
         if is_address_deployed(&l2_provider, udc_deployer_address).await? {
             println!(
-                "UdcDeployer is already available at: {:#064x}",
-                udc_deployer_address
+                "UdcDeployer is already available at: {}",
+                format!("{:#064x}", udc_deployer_address).bright_yellow()
             );
         } else {
             // Makes sure the new account has some funds in it
@@ -397,8 +401,8 @@ async fn run() -> Result<()> {
                     .send()
                     .await?;
                 println!(
-                    "ETH transfer transaction: {:#064x}",
-                    eth_transfer_tx.transaction_hash
+                    "ETH transfer transaction: {}",
+                    format!("{:#064x}", eth_transfer_tx.transaction_hash).bright_yellow()
                 );
                 watch_l2_tx(&l2_provider, eth_transfer_tx.transaction_hash).await?;
             }
@@ -414,8 +418,8 @@ async fn run() -> Result<()> {
                 .send()
                 .await?;
             println!(
-                "UDC deployer deployment transaction: {:#064x}",
-                deployment_tx.transaction_hash
+                "UDC deployer deployment transaction: {}",
+                format!("{:#064x}", deployment_tx.transaction_hash).bright_yellow()
             );
             watch_l2_tx(&l2_provider, deployment_tx.transaction_hash).await?;
         }
@@ -451,16 +455,16 @@ async fn run() -> Result<()> {
             })
             .await?;
         println!(
-            "UniversalDeployer deployment transaction: {:#064x}",
-            udc_deployment_tx.transaction_hash
+            "UniversalDeployer deployment transaction: {}",
+            format!("{:#064x}", udc_deployment_tx.transaction_hash).bright_yellow()
         );
         watch_l2_tx(&l2_provider, udc_deployment_tx.transaction_hash).await?;
 
         // Sanity check on whether UDC is actually deployed
         if is_address_deployed(&l2_provider, udc_address).await? {
             println!(
-                "UniversalDeployer is now available at: {:#064x}",
-                udc_address
+                "UniversalDeployer is now available at: {}",
+                format!("{:#064x}", udc_address).bright_yellow()
             );
         } else {
             anyhow::bail!("UDC still not available after deployment");
@@ -479,7 +483,11 @@ async fn run() -> Result<()> {
             serde_json::from_str::<LegacyContractClass>(class.class_json)
         {
             let class_hash = parsed_class.class_hash()?;
-            println!("Class hash of {}: {:#064x}", class.name, class_hash);
+            println!(
+                "Class hash of {}: {}",
+                class.name,
+                format!("{:#064x}", class_hash).bright_yellow()
+            );
 
             // Declares if not already declared
             declare_legacy_class(
@@ -491,7 +499,11 @@ async fn run() -> Result<()> {
             .await?
         } else if let Ok(parsed_class) = serde_json::from_str::<SierraClass>(class.class_json) {
             let class_hash = parsed_class.class_hash()?;
-            println!("Class hash of {}: {:#064x}", class.name, class_hash);
+            println!(
+                "Class hash of {}: {}",
+                class.name,
+                format!("{:#064x}", class_hash).bright_yellow()
+            );
 
             declare_sierra_class(
                 &l2_provider,
@@ -513,25 +525,25 @@ async fn run() -> Result<()> {
 
             let deployment_address = deployment.deployed_address();
             println!(
-                "Deployment {}/{} of class {} should be at: {:#064x}",
+                "Deployment {}/{} of class {} should be at: {}",
                 ind_deployment + 1,
                 class.deployments.len(),
                 class.name,
-                deployment_address
+                format!("{:#064x}", deployment_address).bright_yellow()
             );
 
             if is_address_deployed(&l2_provider, deployment_address).await? {
                 println!(
-                    "Deployment at {:#064x} is already available",
-                    deployment_address
+                    "Deployment at {} is already available",
+                    format!("{:#064x}", deployment_address).bright_yellow()
                 );
             } else {
                 println!("Contract not deployed. Deploying...");
 
                 let deployment_tx = deployment.send().await?;
                 println!(
-                    "Contract deployment transaction: {:#064x}",
-                    deployment_tx.transaction_hash
+                    "Contract deployment transaction: {}",
+                    format!("{:#064x}", deployment_tx.transaction_hash).bright_yellow()
                 );
                 watch_l2_tx(&l2_provider, deployment_tx.transaction_hash).await?;
             }
@@ -608,8 +620,9 @@ where
 
     if is_class_declared(&provider, class_hash).await? {
         println!(
-            "Legacy class {} already declared: {:#064x}",
-            class_name, class_hash
+            "Legacy class {} already declared: {}",
+            class_name,
+            format!("{:#064x}", class_hash).bright_yellow()
         );
     } else {
         println!(
@@ -624,14 +637,16 @@ where
             .send()
             .await?;
         println!(
-            "Legacy class {} declaration transaction: {:#064x}",
-            class_name, declaration_tx.transaction_hash
+            "Legacy class {} declaration transaction: {}",
+            class_name,
+            format!("{:#064x}", declaration_tx.transaction_hash).bright_yellow()
         );
         watch_l2_tx(provider, declaration_tx.transaction_hash).await?;
 
         println!(
-            "Legacy class {} now declared: {:#064x}",
-            class_name, class_hash
+            "Legacy class {} now declared: {}",
+            class_name,
+            format!("{:#064x}", class_hash).bright_yellow()
         );
     }
 
@@ -653,8 +668,9 @@ where
 
     if is_class_declared(&provider, class_hash).await? {
         println!(
-            "Sierra class {} already declared: {:#064x}",
-            class_name, class_hash
+            "Sierra class {} already declared: {}",
+            class_name,
+            format!("{:#064x}", class_hash).bright_yellow()
         );
     } else {
         println!(
@@ -693,14 +709,16 @@ where
             .send()
             .await?;
         println!(
-            "Sierra class {} declaration transaction: {:#064x}",
-            class_name, declaration_tx.transaction_hash
+            "Sierra class {} declaration transaction: {}",
+            class_name,
+            format!("{:#064x}", declaration_tx.transaction_hash).bright_yellow()
         );
         watch_l2_tx(provider, declaration_tx.transaction_hash).await?;
 
         println!(
-            "Sierra class {} now declared: {:#064x}",
-            class_name, class_hash
+            "Sierra class {} now declared: {}",
+            class_name,
+            format!("{:#064x}", class_hash).bright_yellow()
         );
     }
 
@@ -715,7 +733,10 @@ where
         match provider.get_transaction_receipt(transaction_hash).await {
             Ok(receipt) => match receipt.execution_result() {
                 ExecutionResult::Succeeded => {
-                    eprintln!("Transaction {:#064x} confirmed", transaction_hash);
+                    eprintln!(
+                        "Transaction {} confirmed",
+                        format!("{:#064x}", transaction_hash).bright_yellow()
+                    );
 
                     return Ok(());
                 }
@@ -737,8 +758,8 @@ where
                 ..
             })) => {
                 eprintln!(
-                    "Transaction {:#064x} not confirmed yet...",
-                    transaction_hash
+                    "Transaction {} not confirmed yet...",
+                    format!("{:#064x}", transaction_hash).bright_yellow()
                 );
             }
             Err(err) => return Err(err.into()),
