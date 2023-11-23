@@ -15,6 +15,7 @@ use starknet::{
         Account, AccountFactory, Call, ConnectedAccount, ExecutionEncoding,
         OpenZeppelinAccountFactory, RawAccountDeployment, SingleOwnerAccount,
     },
+    contract::ContractFactory,
     core::types::{
         contract::legacy::LegacyContractClass, BlockId, BlockTag, BroadcastedInvokeTransaction,
         BroadcastedTransaction, ExecutionResult, FieldElement, FunctionCall, StarknetError,
@@ -31,6 +32,15 @@ use url::Url;
 use crate::contracts::StarknetEthBridge;
 
 mod contracts;
+
+const CLASSES: &[ClassToProcess] = &[ClassToProcess {
+    name: "Multicall",
+    class_json: include_str!("./classes/Multicall.json"),
+    deployments: &[ClassDeployment {
+        salt: FieldElement::ZERO,
+        calldata: &[],
+    }],
+}];
 
 const L2_ETH_ADDRESS: FieldElement =
     felt!("0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7");
@@ -62,14 +72,25 @@ struct Cli {
     l2_key: L2Key,
 }
 
-#[derive(Clone)]
-pub struct L1KeyParser;
+struct ClassToProcess {
+    name: &'static str,
+    class_json: &'static str,
+    deployments: &'static [ClassDeployment],
+}
+
+struct ClassDeployment {
+    salt: FieldElement,
+    calldata: &'static [FieldElement],
+}
 
 #[derive(Clone)]
-pub struct L2KeyParser;
+struct L1KeyParser;
 
 #[derive(Clone)]
-pub struct UdcDeployerFactory<P> {
+struct L2KeyParser;
+
+#[derive(Clone)]
+struct UdcDeployerFactory<P> {
     class_hash: FieldElement,
     chain_id: FieldElement,
     provider: P,
@@ -401,6 +422,59 @@ async fn run() -> Result<()> {
         }
     }
 
+    for (ind_class, class) in CLASSES.iter().enumerate() {
+        println!(
+            "[{}/{}] Processing class {}...",
+            ind_class + 1,
+            CLASSES.len(),
+            class.name
+        );
+
+        let parsed_class: Arc<LegacyContractClass> =
+            Arc::new(serde_json::from_str(class.class_json)?);
+
+        let class_hash = parsed_class.class_hash()?;
+        println!("Class hash of {}: {:#064x}", class.name, class_hash);
+
+        // Declares if not already declared
+        declare_class(&l2_provider, &bootstrapper, parsed_class, class.name).await?;
+
+        let contract_factory =
+            ContractFactory::new_with_udc(class_hash, &bootstrapper, udc_address);
+
+        for (ind_deployment, deployment) in class.deployments.iter().enumerate() {
+            let deployment =
+                contract_factory.deploy(deployment.calldata.to_vec(), deployment.salt, false);
+
+            let deployment_address = deployment.deployed_address();
+            println!(
+                "Deployment {}/{} of class {} should be at: {:#064x}",
+                ind_deployment + 1,
+                class.deployments.len(),
+                class.name,
+                deployment_address
+            );
+
+            if is_address_deployed(&l2_provider, deployment_address).await? {
+                println!(
+                    "Deployment at {:#064x} is already available",
+                    deployment_address
+                );
+            } else {
+                println!("Contract not deployed. Deploying...");
+
+                let deployment_tx = deployment.send().await?;
+                println!(
+                    "Contract deployment transaction: {:#064x}",
+                    deployment_tx.transaction_hash
+                );
+                watch_l2_tx(&l2_provider, deployment_tx.transaction_hash).await?;
+            }
+        }
+    }
+
+    println!("Network bootstrapping has completed");
+
     Ok(())
 }
 
@@ -478,10 +552,15 @@ where
             class_name
         );
 
-        let declaration_tx = account.declare_legacy(class).send().await?;
+        let declaration_tx = account
+            .declare_legacy(class)
+            // Workaround for some weird issue with fee estimates
+            .fee_estimate_multiplier(100.0)
+            .send()
+            .await?;
         println!(
-            "UniversalDeployer class declaration transaction: {:#064x}",
-            declaration_tx.transaction_hash
+            "{} class declaration transaction: {:#064x}",
+            class_name, declaration_tx.transaction_hash
         );
         watch_l2_tx(provider, declaration_tx.transaction_hash).await?;
 
