@@ -74,6 +74,16 @@ const CLASSES: &[ClassToProcess] = &[
         class_json: include_str!("./classes/BraavosUnknown.json"),
         deployments: &[],
     },
+    ClassToProcess {
+        name: "OZ-Account-v0.8.0-beta1",
+        class_json: include_str!("./classes/OZ-Account-v0.8.0-beta1.json"),
+        deployments: &[],
+    },
+    ClassToProcess {
+        name: "OZ-ERC20-v0.8.0-beta1",
+        class_json: include_str!("./classes/OZ-ERC20-v0.8.0-beta1.json"),
+        deployments: &[],
+    },
 ];
 
 const L2_ETH_ADDRESS: FieldElement =
