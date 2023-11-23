@@ -50,6 +50,30 @@ const CLASSES: &[ClassToProcess] = &[
         class_json: include_str!("./classes/Argent.json"),
         deployments: &[],
     },
+    ClassToProcess {
+        name: "BraavosProxy",
+        class_json: include_str!("./classes/BraavosProxy.json"),
+        deployments: &[],
+    },
+    ClassToProcess {
+        name: "BraavosAccount",
+        class_json: include_str!("./classes/BraavosAccount.json"),
+        deployments: &[],
+    },
+    ClassToProcess {
+        name: "BraavosMulticall",
+        class_json: include_str!("./classes/BraavosMulticall.json"),
+        deployments: &[ClassDeployment {
+            salt: FieldElement::ZERO,
+            calldata: &[],
+        }],
+    },
+    // Some unknown contract used by Braavos. Braavos doesn't work without it.
+    ClassToProcess {
+        name: "BraavosUnknown",
+        class_json: include_str!("./classes/BraavosUnknown.json"),
+        deployments: &[],
+    },
 ];
 
 const L2_ETH_ADDRESS: FieldElement =
