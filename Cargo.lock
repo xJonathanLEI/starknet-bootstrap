@@ -3836,9 +3836,9 @@ dependencies = [
 
 [[package]]
 name = "starknet-accounts"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a54da2cb18f8083845c0d3bbe1d68758246b94db4b7171e1cdbdc09cefd4b0c"
+checksum = "c7062b020f65d9da7f9dd9f1d97bfb644e881cda8ddb999799a799e6f2e408dd"
 dependencies = [
  "async-trait",
  "auto_impl",
