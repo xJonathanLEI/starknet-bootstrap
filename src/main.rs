@@ -17,8 +17,9 @@ use starknet::{
     },
     contract::ContractFactory,
     core::types::{
-        contract::legacy::LegacyContractClass, BlockId, BlockTag, BroadcastedInvokeTransaction,
-        BroadcastedTransaction, ExecutionResult, FieldElement, FunctionCall, StarknetError,
+        contract::{legacy::LegacyContractClass, CompiledClass, SierraClass},
+        BlockId, BlockTag, BroadcastedInvokeTransaction, BroadcastedTransaction, ExecutionResult,
+        FieldElement, FunctionCall, StarknetError,
     },
     macros::{felt, selector},
     providers::{
@@ -33,14 +34,23 @@ use crate::contracts::StarknetEthBridge;
 
 mod contracts;
 
-const CLASSES: &[ClassToProcess] = &[ClassToProcess {
-    name: "Multicall",
-    class_json: include_str!("./classes/Multicall.json"),
-    deployments: &[ClassDeployment {
-        salt: FieldElement::ZERO,
-        calldata: &[],
-    }],
-}];
+const CLASSES: &[ClassToProcess] = &[
+    // This contract is expected by the Argent X extension
+    ClassToProcess {
+        name: "Multicall",
+        class_json: include_str!("./classes/Multicall.json"),
+        deployments: &[ClassDeployment {
+            salt: FieldElement::ZERO,
+            calldata: &[],
+        }],
+    },
+    // Argent X account class as of extension version 5.10.4
+    ClassToProcess {
+        name: "Argent",
+        class_json: include_str!("./classes/Argent.json"),
+        deployments: &[],
+    },
+];
 
 const L2_ETH_ADDRESS: FieldElement =
     felt!("0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7");
@@ -283,7 +293,7 @@ async fn run() -> Result<()> {
             .expect("to be valid contract class"),
     );
     let udc_class_hash =
-        declare_class(&l2_provider, &bootstrapper, udc_class, "UniversalDeployer").await?;
+        declare_legacy_class(&l2_provider, &bootstrapper, udc_class, "UniversalDeployer").await?;
 
     let udc_address = starknet::core::utils::get_contract_address(
         FieldElement::ZERO,
@@ -308,7 +318,7 @@ async fn run() -> Result<()> {
             serde_json::from_str(include_str!("./classes/UdcDeployer.json"))
                 .expect("to be valid contract class"),
         );
-        let udc_deployer_class_hash = declare_class(
+        let udc_deployer_class_hash = declare_legacy_class(
             &l2_provider,
             &bootstrapper,
             udc_deployer_class,
@@ -430,14 +440,34 @@ async fn run() -> Result<()> {
             class.name
         );
 
-        let parsed_class: Arc<LegacyContractClass> =
-            Arc::new(serde_json::from_str(class.class_json)?);
+        let class_hash = if let Ok(parsed_class) =
+            serde_json::from_str::<LegacyContractClass>(class.class_json)
+        {
+            let class_hash = parsed_class.class_hash()?;
+            println!("Class hash of {}: {:#064x}", class.name, class_hash);
 
-        let class_hash = parsed_class.class_hash()?;
-        println!("Class hash of {}: {:#064x}", class.name, class_hash);
+            // Declares if not already declared
+            declare_legacy_class(
+                &l2_provider,
+                &bootstrapper,
+                Arc::new(parsed_class),
+                class.name,
+            )
+            .await?
+        } else if let Ok(parsed_class) = serde_json::from_str::<SierraClass>(class.class_json) {
+            let class_hash = parsed_class.class_hash()?;
+            println!("Class hash of {}: {:#064x}", class.name, class_hash);
 
-        // Declares if not already declared
-        declare_class(&l2_provider, &bootstrapper, parsed_class, class.name).await?;
+            declare_sierra_class(
+                &l2_provider,
+                &bootstrapper,
+                Arc::new(parsed_class),
+                class.name,
+            )
+            .await?
+        } else {
+            anyhow::bail!("Failed to parse class {}", class.name);
+        };
 
         let contract_factory =
             ContractFactory::new_with_udc(class_hash, &bootstrapper, udc_address);
@@ -528,7 +558,7 @@ where
         .await?[0])
 }
 
-async fn declare_class<P, A>(
+async fn declare_legacy_class<P, A>(
     provider: P,
     account: A,
     class: Arc<LegacyContractClass>,
@@ -543,12 +573,12 @@ where
 
     if is_class_declared(&provider, class_hash).await? {
         println!(
-            "{} class already declared: {:#064x}",
+            "Legacy class {} already declared: {:#064x}",
             class_name, class_hash
         );
     } else {
         println!(
-            "{} class not declared yet. Declaring it from bootstrapper...",
+            "Legacy class {} not declared yet. Declaring it from bootstrapper...",
             class_name
         );
 
@@ -559,12 +589,84 @@ where
             .send()
             .await?;
         println!(
-            "{} class declaration transaction: {:#064x}",
+            "Legacy class {} declaration transaction: {:#064x}",
             class_name, declaration_tx.transaction_hash
         );
         watch_l2_tx(provider, declaration_tx.transaction_hash).await?;
 
-        println!("{} class now declared: {:#064x}", class_name, class_hash);
+        println!(
+            "Legacy class {} now declared: {:#064x}",
+            class_name, class_hash
+        );
+    }
+
+    Ok(class_hash)
+}
+
+async fn declare_sierra_class<P, A>(
+    provider: P,
+    account: A,
+    class: Arc<SierraClass>,
+    class_name: &'static str,
+) -> Result<FieldElement>
+where
+    P: Provider + Sync,
+    A: ConnectedAccount + Sync,
+    A::SignError: 'static,
+{
+    let class_hash = class.class_hash()?;
+
+    if is_class_declared(&provider, class_hash).await? {
+        println!(
+            "Sierra class {} already declared: {:#064x}",
+            class_name, class_hash
+        );
+    } else {
+        println!(
+            "Sierra class {} not declared yet. Declaring it from bootstrapper...",
+            class_name
+        );
+
+        println!("Compiling Sierra class with compiler v2.3.0...");
+
+        let sierra_class_json = serde_json::to_string(class.as_ref())?;
+
+        let contract_class: cairo_lang_starknet::contract_class::ContractClass =
+            serde_json::from_str(&sierra_class_json)?;
+
+        // TODO: implement the `validate_compatible_sierra_version` call
+
+        let casm_contract =
+            cairo_lang_starknet::casm_contract_class::CasmContractClass::from_contract_class(
+                contract_class,
+                false,
+            )?;
+
+        // TODO: directly convert type without going through JSON
+        let casm_class =
+            serde_json::from_str::<CompiledClass>(&serde_json::to_string(&casm_contract)?)?;
+
+        let casm_class_hash = casm_class.class_hash()?;
+
+        let declaration_tx = account
+            .declare(
+                Arc::new(class.as_ref().to_owned().flatten()?),
+                casm_class_hash,
+            )
+            // Workaround for some weird issue with fee estimates
+            .fee_estimate_multiplier(100.0)
+            .send()
+            .await?;
+        println!(
+            "Sierra class {} declaration transaction: {:#064x}",
+            class_name, declaration_tx.transaction_hash
+        );
+        watch_l2_tx(provider, declaration_tx.transaction_hash).await?;
+
+        println!(
+            "Sierra class {} now declared: {:#064x}",
+            class_name, class_hash
+        );
     }
 
     Ok(class_hash)
